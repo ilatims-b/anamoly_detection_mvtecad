@@ -1,0 +1,1 @@
+# anamoly_detection_mvtecad
