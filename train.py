@@ -11,8 +11,8 @@ import time
 import os
 from tqdm import tqdm
 
-from ssim_autoencoder import ConvolutionalAutoencoder, SSIMLoss
-from dataset_utils import get_dataloaders, TransistorDataset
+from models.ssim_autoencoder import ConvolutionalAutoencoder, SSIMLoss
+from data.data_utils import get_dataloaders, TransistorDataset
 
 def set_seed(seed=42):
     """Set random seed for reproducibility"""
