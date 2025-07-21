@@ -68,13 +68,14 @@ class CustomAnomalyDataset(Dataset):
         label = self.labels[idx]
         mask_path = self.mask_paths[idx]
 
+        # Always convert to RGB first to handle single-channel source images consistently
         image = Image.open(img_path).convert('RGB')
         
-        # Ensure image is 3-channel for PaDiM
         if self.transform:
             image = self.transform(image)
-        if image.shape[0] == 1:
-            image = image.repeat(3, 1, 1)
+        
+        # The transform pipeline now correctly handles grayscale conversion.
+        # No extra channel logic is needed here.
 
         if mask_path and mask_path.exists():
             mask = Image.open(mask_path).convert('L')
@@ -96,19 +97,23 @@ def get_dataloaders(data_root, batch_size=32, num_workers=4, target_size=(256, 2
     
     train_transforms_list = [
         transforms.Resize(target_size),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.ToTensor(),
     ]
-    
     test_transforms_list = [
         transforms.Resize(target_size),
-        transforms.ToTensor(),
     ]
 
     if to_grayscale:
         train_transforms_list.append(transforms.Grayscale(num_output_channels=1))
         test_transforms_list.append(transforms.Grayscale(num_output_channels=1))
+
+    train_transforms_list += [
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ToTensor(),
+    ]
+    test_transforms_list += [
+        transforms.ToTensor(),
+    ]
 
     train_transform = transforms.Compose(train_transforms_list)
     test_transform = transforms.Compose(test_transforms_list)

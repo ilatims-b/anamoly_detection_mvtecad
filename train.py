@@ -224,7 +224,7 @@ def main():
 
     # Load data
     print("Loading dataset...")
-    is_grayscale = args.model == 'ssim'
+    is_grayscale = args.model in ['ssim', 'mse']
     train_loader, test_loader = get_dataloaders(
         data_root=args.data_root,
         batch_size=args.batch_size,
