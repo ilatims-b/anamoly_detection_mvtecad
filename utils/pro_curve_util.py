@@ -101,7 +101,12 @@ def compute_pro(anomaly_maps, ground_truth_maps):
     fprs = fp_changes_sorted
 
     np.cumsum(pro_changes_sorted, out=pro_changes_sorted)
-    np.divide(pro_changes_sorted, num_gt_regions, out=pro_changes_sorted)
+    if num_gt_regions > 0:
+        np.divide(pro_changes_sorted, num_gt_regions, out=pro_changes_sorted)
+    else:
+        # If there are no ground-truth regions, the PRO score is undefined.
+        # In this case, we can set it to 0.
+        pro_changes_sorted.fill(0.)
     pros = pro_changes_sorted
 
     # Merge (FPR, PRO) points that occur together at the same threshold.
