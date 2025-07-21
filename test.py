@@ -322,22 +322,28 @@ def save_sample_results(model, test_loader, device, save_dir, method='ssim', num
 
                 # Create visualization
                 fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
-                axes[0].imshow(original, cmap='gray')
+                
+                # Original image
+                original = images[0].cpu().numpy()
+                if original.shape[0] == 3:
+                    original = np.transpose(original, (1, 2, 0))
+                axes[0].imshow(original)
                 axes[0].set_title('Original')
                 axes[0].axis('off')
 
+                # Anomaly map
                 axes[1].imshow(anomaly_map, cmap='hot')
-                axes[1].set_title('Anomaly Map (PaDiM)')
+                axes[1].set_title(f'PaDiM Anomaly Map')
                 axes[1].axis('off')
 
+                # Ground truth
                 axes[2].imshow(gt_mask, cmap='gray')
                 axes[2].set_title(f'Ground Truth (Label: {label})')
                 axes[2].axis('off')
-
-            plt.tight_layout()
-            plt.savefig(samples_dir / f'{method}_sample_{i:03d}_label_{label}.png', dpi=150)
-            plt.close()
+                
+                plt.tight_layout()
+                plt.savefig(samples_dir / f'sample_{i:03d}_{method}_label_{label}.png', dpi=150)
+                plt.close()
 
 
 def main():
