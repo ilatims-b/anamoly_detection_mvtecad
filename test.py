@@ -9,8 +9,8 @@ from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve, auc
 import cv2
 
-from ssim_autoencoder import ConvolutionalAutoencoder, SSIMLoss, anomaly_score_ssim
-from dataset_utils import get_dataloaders
+from models.ssim_autoencoder import ConvolutionalAutoencoder, SSIMLoss, anomaly_score_ssim
+from data.data_utils import get_dataloaders
 
 def compute_anomaly_maps(model, images, device, method='ssim'):
     """
@@ -236,29 +236,61 @@ def evaluate_model(model, test_loader, device, save_dir):
         plt.savefig(save_dir / 'roc_curve_image.png', dpi=150)
         plt.close()
 
-    # Pixel-level evaluation (only for anomalous images)
-    anomalous_indices = np.where(all_labels == 1)[0]
-    if len(anomalous_indices) > 0:
-        # Pixel-level AUROC (P-AUROC) 
-        pixel_scores = []
-        pixel_labels = []
+    # ============ FIXED PIXEL-LEVEL EVALUATION SECTION ============
+    # Pixel-level evaluation (process ALL images, not just anomalous ones)
+    pixel_scores = []
+    pixel_labels = []
 
-        for idx in anomalous_indices:
-            anomaly_map = all_anomaly_maps[idx].squeeze().numpy()
-            gt_mask = all_masks[idx].squeeze()
+    print("Processing pixel-level evaluation...")
+    for idx in range(len(all_labels)):
+        anomaly_map = all_anomaly_maps[idx].squeeze().numpy()
+        gt_mask = all_masks[idx].squeeze()
+        
+        # Convert ground truth mask to binary (handle potential float values)
+        gt_mask_binary = (gt_mask > 0).astype(np.uint8)
+        
+        # Add pixel-level scores and labels
+        pixel_scores.extend(anomaly_map.flatten())
+        pixel_labels.extend(gt_mask_binary.flatten())
 
-            pixel_scores.extend(anomaly_map.flatten())
-            pixel_labels.extend(gt_mask.flatten())
+    # Convert to numpy arrays
+    pixel_scores = np.array(pixel_scores)
+    pixel_labels = np.array(pixel_labels)
 
-        pixel_scores = np.array(pixel_scores)
-        pixel_labels = np.array(pixel_labels)
+    print(f"Pixel evaluation - Total pixels: {len(pixel_scores)}")
+    print(f"Anomalous pixels: {np.sum(pixel_labels)}")
+    print(f"Normal pixels: {len(pixel_labels) - np.sum(pixel_labels)}")
 
-        if len(np.unique(pixel_labels)) > 1:
+    # Pixel-level AUROC (P-AUROC) - only if we have both normal and anomalous pixels
+    if len(np.unique(pixel_labels)) > 1:
+        try:
             p_auroc = roc_auc_score(pixel_labels, pixel_scores)
             results['P-AUROC'] = p_auroc
             print(f"Pixel-level AUROC: {p_auroc:.4f}")
 
-        # PRO score calculation
+            # Plot pixel-level ROC curve
+            fpr_p, tpr_p, _ = roc_curve(pixel_labels, pixel_scores)
+            plt.figure(figsize=(8, 6))
+            plt.plot(fpr_p, tpr_p, label=f'Pixel ROC Curve (AUC = {p_auroc:.4f})')
+            plt.plot([0, 1], [0, 1], 'k--', label='Random')
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('ROC Curve - Pixel Level')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(save_dir / 'roc_curve_pixel.png', dpi=150)
+            plt.close()
+
+        except Exception as e:
+            print(f"Could not compute P-AUROC: {e}")
+            results['P-AUROC'] = 0.0
+    else:
+        print("Cannot compute P-AUROC: Only one class present in pixel labels")
+        results['P-AUROC'] = 0.0
+
+    # PRO score calculation (only for anomalous images)
+    anomalous_indices = np.where(all_labels == 1)[0]
+    if len(anomalous_indices) > 0:
         anomalous_maps = all_anomaly_maps[anomalous_indices]
         anomalous_masks = torch.tensor(all_masks[anomalous_indices])
 
@@ -269,11 +301,15 @@ def evaluate_model(model, test_loader, device, save_dir):
         except Exception as e:
             print(f"Could not compute PRO score: {e}")
             results['AUPRO'] = 0.0
+    else:
+        print("No anomalous images found for PRO score calculation")
+        results['AUPRO'] = 0.0
 
     # Save sample results
     save_sample_results(model, test_loader, device, save_dir, num_samples=10)
 
     return results
+
 
 def save_sample_results(model, test_loader, device, save_dir, num_samples=10):
     """Save sample results showing original, reconstructed, and anomaly map"""

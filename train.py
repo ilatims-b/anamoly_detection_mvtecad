@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -23,7 +22,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def train_epoch(model, train_loader, criterion, optimizer, device, epoch):
+def train_epoch(model, train_loader, criterion, optimizer, scheduler, device, epoch):
     """Train for one epoch"""
     model.train()
     total_loss = 0.0
@@ -45,8 +44,11 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch):
         total_loss += loss.item()
 
         # Update progress bar
-        pbar.set_postfix({'Loss': f'{loss.item():.6f}'})
+        pbar.set_postfix({'Loss': f'{loss.item():.6f}', 'LR': f'{scheduler.get_last_lr()[0]:.2e}'})
 
+    # Step scheduler after each epoch
+    scheduler.step()
+    
     return total_loss / len(train_loader)
 
 def save_sample_reconstructions(model, test_loader, device, save_dir, epoch, num_samples=5):
@@ -83,6 +85,24 @@ def save_sample_reconstructions(model, test_loader, device, save_dir, epoch, num
 
 def main():
     parser = argparse.ArgumentParser(description='Train SSIM Autoencoder for Anomaly Detection')
+    
+    # Resume training arguments
+    parser.add_argument('--resume', type=str, default='', 
+                        help='Path to checkpoint to resume from')
+    parser.add_argument('--start_epoch', type=int, default=0, 
+                        help='Starting epoch for resumed training')
+    
+    # Early stopping arguments
+    parser.add_argument('--early_stopping_patience', type=int, default=20, 
+                        help='Patience for early stopping')
+    
+    # Learning rate scheduler arguments
+    parser.add_argument('--lr_step_size', type=int, default=50, 
+                        help='Step size for LR scheduler')
+    parser.add_argument('--lr_gamma', type=float, default=0.5, 
+                        help='Gamma for LR scheduler')
+    
+    # Original arguments
     parser.add_argument('--data_root', type=str, required=True,
                         help='Root directory of transistor dataset')
     parser.add_argument('--epochs', type=int, default=100,
@@ -113,7 +133,12 @@ def main():
 
     # Setup device
     if args.device == 'auto':
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        elif torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
     else:
         device = torch.device(args.device)
     print(f"Using device: {device}")
@@ -121,6 +146,10 @@ def main():
     # Create save directory
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize early stopping variables
+    patience_counter = 0
+    best_loss = float('inf')
 
     # Load data
     print("Loading dataset...")
@@ -141,38 +170,74 @@ def main():
     # Loss function and optimizer (as per paper)
     criterion = SSIMLoss(window_size=args.window_size)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+
+    # Resume from checkpoint if provided
+    start_epoch = 0
+    if args.resume:
+        checkpoint_path = Path(args.resume)
+        if checkpoint_path.exists():
+            print(f"Loading checkpoint from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_loss = checkpoint.get('best_loss', float('inf'))
+            
+            # Load scheduler state if available
+            if 'scheduler_state_dict' in checkpoint:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
+            print(f"Resuming training from epoch {start_epoch}")
+            print(f"Previous best loss: {best_loss:.6f}")
+        else:
+            print(f"Checkpoint {checkpoint_path} not found, starting training from scratch.")
 
     # Training loop
     print("Starting training...")
     train_losses = []
-    best_loss = float('inf')
 
     start_time = time.time()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs):
         # Train
-        avg_loss = train_epoch(model, train_loader, criterion, optimizer, device, epoch)
+        avg_loss = train_epoch(model, train_loader, criterion, optimizer, scheduler, device, epoch)
         train_losses.append(avg_loss)
 
-        print(f'Epoch {epoch}/{args.epochs}, Average Loss: {avg_loss:.6f}')
+        current_lr = scheduler.get_last_lr()[0]
+        print(f'Epoch {epoch}/{args.epochs}, Average Loss: {avg_loss:.6f}, LR: {current_lr:.2e}')
 
-        # Save sample reconstructions
-        if epoch % args.save_interval == 0 or epoch == 1:
-            save_sample_reconstructions(
-                model, test_loader, device, 
-                save_dir / 'samples', epoch
-            )
-
-        # Save best model
+        # Early stopping and best model saving
         if avg_loss < best_loss:
             best_loss = avg_loss
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'loss': avg_loss,
+                'best_loss': best_loss,
                 'args': args,
             }, save_dir / 'best_model.pth')
+            patience_counter = 0
+            print(f"New best model saved with loss: {best_loss:.6f}")
+        else:
+            patience_counter += 1
+
+        # Early stopping check
+        if patience_counter >= args.early_stopping_patience:
+            print(f"Early stopping triggered at epoch {epoch}")
+            print(f"No improvement for {args.early_stopping_patience} epochs")
+            break
+
+        # Save sample reconstructions
+        if epoch % args.save_interval == 0 or epoch == start_epoch:
+            save_sample_reconstructions(
+                model, test_loader, device, 
+                save_dir / 'samples', epoch
+            )
 
         # Save checkpoint
         if epoch % args.save_interval == 0:
@@ -180,31 +245,61 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'loss': avg_loss,
+                'best_loss': best_loss,
                 'args': args,
             }, save_dir / f'checkpoint_epoch_{epoch}.pth')
 
     # Save final model
     torch.save({
-        'epoch': args.epochs,
+        'epoch': epoch if 'epoch' in locals() else args.epochs - 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'loss': train_losses[-1],
+        'scheduler_state_dict': scheduler.state_dict(),
+        'loss': train_losses[-1] if train_losses else float('inf'),
+        'best_loss': best_loss,
         'args': args,
     }, save_dir / 'final_model.pth')
 
     # Plot training loss
-    plt.figure(figsize=(10, 6))
-    plt.plot(train_losses)
-    plt.title('Training Loss (SSIM)')
-    plt.xlabel('Epoch')
-    plt.ylabel('SSIM Loss')
-    plt.grid(True)
-    plt.savefig(save_dir / 'training_loss.png', dpi=150)
-    plt.close()
+    if train_losses:
+        plt.figure(figsize=(12, 8))
+        
+        # Plot training loss
+        plt.subplot(2, 1, 1)
+        plt.plot(range(start_epoch, start_epoch + len(train_losses)), train_losses)
+        plt.title('Training Loss (SSIM)')
+        plt.xlabel('Epoch')
+        plt.ylabel('SSIM Loss')
+        plt.grid(True)
+        
+        # Plot learning rate schedule
+        plt.subplot(2, 1, 2)
+        lrs = []
+        temp_scheduler = optim.lr_scheduler.StepLR(
+            optim.Adam([torch.tensor(0.0)], lr=args.lr), 
+            step_size=args.lr_step_size, 
+            gamma=args.lr_gamma
+        )
+        for i in range(start_epoch, start_epoch + len(train_losses)):
+            lrs.append(temp_scheduler.get_last_lr()[0])
+            temp_scheduler.step()
+        
+        plt.plot(range(start_epoch, start_epoch + len(train_losses)), lrs)
+        plt.title('Learning Rate Schedule')
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.yscale('log')
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(save_dir / 'training_progress.png', dpi=150)
+        plt.close()
 
     # Save training history
-    np.save(save_dir / 'train_losses.npy', np.array(train_losses))
+    if train_losses:
+        np.save(save_dir / 'train_losses.npy', np.array(train_losses))
 
     total_time = time.time() - start_time
     print(f"Training completed in {total_time:.2f} seconds")
