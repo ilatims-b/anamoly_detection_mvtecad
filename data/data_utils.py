@@ -88,13 +88,11 @@ def get_dataloaders(data_root, batch_size=32, num_workers=4, target_size=(256, 2
         transforms.RandomRotation(10),
         transforms.ToTensor(),
         transforms.Grayscale(num_output_channels=1),
-        transforms.Normalize([0.5], [0.5])
     ])
     test_transform = transforms.Compose([
         transforms.Resize(target_size),
         transforms.ToTensor(),
         transforms.Grayscale(num_output_channels=1),
-        transforms.Normalize([0.5], [0.5])
     ])
     train_dataset = CustomAnomalyDataset(
         root_dir=data_root,
