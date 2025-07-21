@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from models.ssim_autoencoder import ConvolutionalAutoencoder, SSIMLoss
 from models.padim import PaDiM
+from models.l2_autoencoder import L2Autoencoder
 from data.data_utils import get_dataloaders
 
 
@@ -151,7 +152,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train SSIM Autoencoder or PaDiM for Anomaly Detection')
     
     # Model selection
-    parser.add_argument('--model', type=str, choices=['ssim', 'padim'], default='ssim',
+    parser.add_argument('--model', type=str, choices=['ssim', 'padim', 'mse'], default='ssim',
                         help='Model to train: ssim (autoencoder) or padim')
     
     # PaDiM specific arguments
@@ -236,23 +237,24 @@ def main():
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")
 
-    if args.model == 'ssim':
-        # SSIM Autoencoder Training
-        print("Training SSIM Autoencoder...")
+    if args.model == 'ssim' or args.model == 'mse':
+        # SSIM or MSE Autoencoder Training
+        print(f"Training {args.model.upper()} Autoencoder...")
         
         # Initialize early stopping variables
         patience_counter = 0
         best_loss = float('inf')
 
-        # Initialize model
-        model = ConvolutionalAutoencoder(latent_dim=args.latent_dim).to(device)
-        print(f"SSIM Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+        # Initialize model and loss
+        if args.model == 'ssim':
+            model = ConvolutionalAutoencoder(latent_dim=args.latent_dim).to(device)
+            criterion = SSIMLoss(window_size=args.window_size)
+        else:
+            model = L2Autoencoder(latent_dim=args.latent_dim).to(device)
+            criterion = nn.MSELoss()
+        print(f"{args.model.upper()} Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-        # Loss function and optimizer
-        criterion = SSIMLoss(window_size=args.window_size)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
-        
-        # Learning rate scheduler
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
         # Resume from checkpoint if provided
@@ -266,17 +268,15 @@ def main():
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 start_epoch = checkpoint['epoch'] + 1
                 best_loss = checkpoint.get('best_loss', float('inf'))
-                
                 if 'scheduler_state_dict' in checkpoint:
                     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                
                 print(f"Resuming training from epoch {start_epoch}")
                 print(f"Previous best loss: {best_loss:.6f}")
             else:
                 print(f"Checkpoint {checkpoint_path} not found, starting training from scratch.")
 
         # Training loop
-        print("Starting SSIM training...")
+        print(f"Starting {args.model.upper()} training...")
         train_losses = []
         start_time = time.time()
 
@@ -298,11 +298,11 @@ def main():
                     'scheduler_state_dict': scheduler.state_dict(),
                     'loss': avg_loss,
                     'best_loss': best_loss,
-                    'model_type': 'ssim',
+                    'model_type': args.model,
                     'args': args,
                 }, save_dir / 'best_model.pth')
                 patience_counter = 0
-                print(f"New best SSIM model saved with loss: {best_loss:.6f}")
+                print(f"New best {args.model.upper()} model saved with loss: {best_loss:.6f}")
             else:
                 patience_counter += 1
 
@@ -328,7 +328,7 @@ def main():
                     'scheduler_state_dict': scheduler.state_dict(),
                     'loss': avg_loss,
                     'best_loss': best_loss,
-                    'model_type': 'ssim',
+                    'model_type': args.model,
                     'args': args,
                 }, save_dir / f'checkpoint_epoch_{epoch}.pth')
 
@@ -341,21 +341,19 @@ def main():
             'scheduler_state_dict': scheduler.state_dict(),
             'loss': train_losses[-1] if train_losses else float('inf'),
             'best_loss': best_loss,
-            'model_type': 'ssim',
+            'model_type': args.model,
             'args': args,
         }, save_dir / 'final_model.pth')
 
         # Plot training progress
         if train_losses:
             plt.figure(figsize=(12, 8))
-            
             plt.subplot(2, 1, 1)
             plt.plot(range(start_epoch, start_epoch + len(train_losses)), train_losses)
-            plt.title('SSIM Training Loss')
+            plt.title(f'{args.model.upper()} Training Loss')
             plt.xlabel('Epoch')
-            plt.ylabel('SSIM Loss')
+            plt.ylabel(f'{args.model.upper()} Loss')
             plt.grid(True)
-            
             plt.subplot(2, 1, 2)
             lrs = []
             temp_scheduler = optim.lr_scheduler.StepLR(
@@ -366,22 +364,18 @@ def main():
             for i in range(start_epoch, start_epoch + len(train_losses)):
                 lrs.append(temp_scheduler.get_last_lr()[0])
                 temp_scheduler.step()
-            
             plt.plot(range(start_epoch, start_epoch + len(train_losses)), lrs)
             plt.title('Learning Rate Schedule')
             plt.xlabel('Epoch')
             plt.ylabel('Learning Rate')
             plt.yscale('log')
             plt.grid(True)
-            
             plt.tight_layout()
             plt.savefig(save_dir / 'training_progress.png', dpi=150)
             plt.close()
-
             np.save(save_dir / 'train_losses.npy', np.array(train_losses))
-
         total_time = time.time() - start_time
-        print(f"SSIM training completed in {total_time:.2f} seconds")
+        print(f"{args.model.upper()} training completed in {total_time:.2f} seconds")
         print(f"Best loss: {best_loss:.6f}")
 
     elif args.model == 'padim':
