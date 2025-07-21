@@ -35,7 +35,13 @@ class CustomAnomalyDataset(Dataset):
     def _load_data(self):
         if self.mode == 'train':
             train_dir = self.root_dir / 'train'
-            self.image_paths = sorted(list(train_dir.glob('*.png')))
+            # Look for images in the train directory and its subdirectories
+            image_paths = list(train_dir.glob('*.png'))
+            for subdir in train_dir.iterdir():
+                if subdir.is_dir():
+                    image_paths.extend(list(subdir.glob('*.png')))
+            
+            self.image_paths = sorted(image_paths)
             self.labels = [0] * len(self.image_paths)
             self.mask_paths = [None] * len(self.image_paths)
         elif self.mode == 'test':
@@ -63,8 +69,12 @@ class CustomAnomalyDataset(Dataset):
         mask_path = self.mask_paths[idx]
 
         image = Image.open(img_path).convert('RGB')
+        
+        # Ensure image is 3-channel for PaDiM
         if self.transform:
             image = self.transform(image)
+        if image.shape[0] == 1:
+            image = image.repeat(3, 1, 1)
 
         if mask_path and mask_path.exists():
             mask = Image.open(mask_path).convert('L')
@@ -81,19 +91,28 @@ class CustomAnomalyDataset(Dataset):
             'path': str(img_path)
         }
 
-def get_dataloaders(data_root, batch_size=32, num_workers=4, target_size=(256, 256)):
-    train_transform = transforms.Compose([
+def get_dataloaders(data_root, batch_size=32, num_workers=4, target_size=(256, 256), to_grayscale=False):
+    """Creates training and testing dataloaders."""
+    
+    train_transforms_list = [
         transforms.Resize(target_size),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
         transforms.ToTensor(),
-        transforms.Grayscale(num_output_channels=1),
-    ])
-    test_transform = transforms.Compose([
+    ]
+    
+    test_transforms_list = [
         transforms.Resize(target_size),
         transforms.ToTensor(),
-        transforms.Grayscale(num_output_channels=1),
-    ])
+    ]
+
+    if to_grayscale:
+        train_transforms_list.append(transforms.Grayscale(num_output_channels=1))
+        test_transforms_list.append(transforms.Grayscale(num_output_channels=1))
+
+    train_transform = transforms.Compose(train_transforms_list)
+    test_transform = transforms.Compose(test_transforms_list)
+
     train_dataset = CustomAnomalyDataset(
         root_dir=data_root,
         mode='train',

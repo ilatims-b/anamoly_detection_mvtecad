@@ -9,6 +9,7 @@ import cv2
 from sklearn.metrics import roc_auc_score, roc_curve
 
 from models.ssim_autoencoder import ConvolutionalAutoencoder, SSIMLoss, anomaly_score_ssim
+from models.padim import PaDiM
 from data.data_utils import get_dataloaders
 
 # Import project-specific evaluation utilities
@@ -16,36 +17,53 @@ from utils.pro_curve_util import compute_pro
 from utils.roc_curve_util import compute_classification_roc
 from utils.generic_util import trapezoid
 
-def compute_anomaly_maps(model, images, device, method='ssim'):
+
+def compute_anomaly_maps_ssim(model, images, device):
     """
-    Compute pixel-wise anomaly maps
+    Compute pixel-wise anomaly maps using SSIM autoencoder
     """
     model.eval()
     with torch.no_grad():
         reconstructed = model(images)
-
-        if method == 'ssim':
-            # Use SSIM-based anomaly score
-            anomaly_maps = []
-            for i in range(images.size(0)):
-                orig = images[i:i+1]
-                recon = reconstructed[i:i+1]
-                # Get SSIM map (1 - SSIM gives anomaly score)
-                ssim_map = 1 - anomaly_score_ssim(orig, recon, window_size=11)
-                anomaly_maps.append(ssim_map)
-            anomaly_maps = torch.cat(anomaly_maps, dim=0)
-
-        elif method == 'mse':
-            # Use MSE-based anomaly score
-            anomaly_maps = F.mse_loss(reconstructed, images, reduction='none')
-            anomaly_maps = torch.mean(anomaly_maps, dim=1, keepdim=True)
-
-        else:
-            raise ValueError(f"Unknown method: {method}")
-
+        
+        # Use SSIM-based anomaly score
+        anomaly_maps = []
+        for i in range(images.size(0)):
+            orig = images[i:i+1]
+            recon = reconstructed[i:i+1]
+            # Get SSIM map (1 - SSIM gives anomaly score)
+            ssim_map = 1 - anomaly_score_ssim(orig, recon, window_size=11)
+            anomaly_maps.append(ssim_map)
+        anomaly_maps = torch.cat(anomaly_maps, dim=0)
+    
     return anomaly_maps
 
-def evaluate_model(model, test_loader, device, save_dir):
+
+def compute_anomaly_maps_padim(model, images, device):
+    """
+    Compute pixel-wise anomaly maps using PaDiM
+    """
+    model.eval()
+    with torch.no_grad():
+        # PaDiM directly outputs anomaly maps
+        anomaly_maps = model(images)
+    
+    return anomaly_maps
+
+
+def compute_anomaly_maps(model, images, device, method='ssim'):
+    """
+    Compute pixel-wise anomaly maps based on method
+    """
+    if method == 'ssim':
+        return compute_anomaly_maps_ssim(model, images, device)
+    elif method == 'padim':
+        return compute_anomaly_maps_padim(model, images, device)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+
+def evaluate_model(model, test_loader, device, save_dir, method='ssim'):
     """
     Evaluate the trained model using project-specific evaluation utilities
     """
@@ -58,7 +76,7 @@ def evaluate_model(model, test_loader, device, save_dir):
     all_pixel_labels = []  # Pixel-level ground truth masks
     all_paths = []
 
-    print("Evaluating model...")
+    print(f"Evaluating {method.upper()} model...")
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(test_loader)):
             images = batch['image'].to(device)
@@ -67,7 +85,7 @@ def evaluate_model(model, test_loader, device, save_dir):
             paths = batch['path']
 
             # Generate anomaly maps
-            anomaly_maps = compute_anomaly_maps(model, images, device, method='ssim')
+            anomaly_maps = compute_anomaly_maps(model, images, device, method=method)
 
             # Process each image in the batch
             for i in range(images.size(0)):
@@ -138,14 +156,14 @@ def evaluate_model(model, test_loader, device, save_dir):
 
             # Plot Image-level ROC curve
             plt.figure(figsize=(8, 6))
-            plt.plot(i_fpr, i_tpr, label=f'ROC Curve (AUC = {i_auroc:.4f})')
+            plt.plot(i_fpr, i_tpr, label=f'{method.upper()} ROC Curve (AUC = {i_auroc:.4f})')
             plt.plot([0, 1], [0, 1], 'k--', label='Random')
             plt.xlabel('False Positive Rate')
             plt.ylabel('True Positive Rate')
-            plt.title('ROC Curve - Image Level')
+            plt.title(f'{method.upper()} ROC Curve - Image Level')
             plt.legend()
             plt.grid(True)
-            plt.savefig(save_dir / 'roc_curve_image.png', dpi=150)
+            plt.savefig(save_dir / f'{method}_roc_curve_image.png', dpi=150)
             plt.close()
         except Exception as e:
             print(f"Could not compute I-AUROC: {e}")
@@ -182,14 +200,14 @@ def evaluate_model(model, test_loader, device, save_dir):
                 # Plot Pixel-level ROC curve
                 p_fpr, p_tpr, _ = roc_curve(pixel_labels_flat, pixel_scores_flat)
                 plt.figure(figsize=(8, 6))
-                plt.plot(p_fpr, p_tpr, label=f'Pixel ROC Curve (AUC = {p_auroc:.4f})')
+                plt.plot(p_fpr, p_tpr, label=f'{method.upper()} Pixel ROC Curve (AUC = {p_auroc:.4f})')
                 plt.plot([0, 1], [0, 1], 'k--', label='Random')
                 plt.xlabel('False Positive Rate')
                 plt.ylabel('True Positive Rate')
-                plt.title('ROC Curve - Pixel Level')
+                plt.title(f'{method.upper()} ROC Curve - Pixel Level')
                 plt.legend()
                 plt.grid(True)
-                plt.savefig(save_dir / 'roc_curve_pixel.png', dpi=150)
+                plt.savefig(save_dir / f'{method}_roc_curve_pixel.png', dpi=150)
                 plt.close()
             except Exception as e:
                 print(f"Could not compute P-AUROC: {e}")
@@ -225,11 +243,12 @@ def evaluate_model(model, test_loader, device, save_dir):
         results['AUPRO'] = 0.0
 
     # Save sample results
-    save_sample_results(model, test_loader, device, save_dir, num_samples=10)
+    save_sample_results(model, test_loader, device, save_dir, method=method, num_samples=10)
 
     return results
 
-def save_sample_results(model, test_loader, device, save_dir, num_samples=10):
+
+def save_sample_results(model, test_loader, device, save_dir, method='ssim', num_samples=10):
     """Save sample results with proper shape handling"""
     model.eval()
     save_dir = Path(save_dir)
@@ -245,64 +264,98 @@ def save_sample_results(model, test_loader, device, save_dir, num_samples=10):
             labels = batch['label'].numpy()
             masks = batch['mask'].numpy()
 
-            reconstructed = model(images)
-            anomaly_maps = compute_anomaly_maps(model, images, device, method='ssim')
+            if method == 'ssim':
+                reconstructed = model(images)
+                anomaly_maps = compute_anomaly_maps(model, images, device, method=method)
+                
+                # Convert to numpy with proper shape handling
+                original = images[0].cpu().squeeze().numpy()
+                recon = reconstructed[0].cpu().squeeze().numpy()
+                anomaly_map = anomaly_maps[0].cpu().squeeze().numpy()
+                gt_mask = masks[0].squeeze()
+                label = labels[0]
 
-            # Convert to numpy with proper shape handling
-            original = images[0].cpu().squeeze().numpy()
-            recon = reconstructed[0].cpu().squeeze().numpy()
-            anomaly_map = anomaly_maps[0].cpu().squeeze().numpy()
-            gt_mask = masks[0].squeeze()
-            label = labels[0]
+                # Create visualization
+                fig, axes = plt.subplots(2, 2, figsize=(12, 12))
 
-            # Ensure all arrays are 2D for visualization
-            if anomaly_map.ndim != 2:
-                if anomaly_map.ndim == 0:
-                    anomaly_map = np.zeros((256, 256))
-                elif anomaly_map.ndim == 1:
-                    anomaly_map = anomaly_map.reshape(256, 256)
-                else:
-                    anomaly_map = anomaly_map.squeeze()
+                axes[0, 0].imshow(original, cmap='gray')
+                axes[0, 0].set_title('Original')
+                axes[0, 0].axis('off')
 
-            if gt_mask.ndim != 2:
-                if gt_mask.ndim == 0:
-                    gt_mask = np.zeros((256, 256))
-                elif gt_mask.ndim == 1:
-                    gt_mask = gt_mask.reshape(256, 256)
-                else:
-                    gt_mask = gt_mask.squeeze()
+                axes[0, 1].imshow(recon, cmap='gray')
+                axes[0, 1].set_title('Reconstructed')
+                axes[0, 1].axis('off')
 
-            # Create visualization
-            fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+                axes[1, 0].imshow(anomaly_map, cmap='hot')
+                axes[1, 0].set_title('Anomaly Map (SSIM)')
+                axes[1, 0].axis('off')
 
-            axes[0, 0].imshow(original, cmap='gray')
-            axes[0, 0].set_title('Original')
-            axes[0, 0].axis('off')
+                axes[1, 1].imshow(gt_mask, cmap='gray')
+                axes[1, 1].set_title(f'Ground Truth (Label: {label})')
+                axes[1, 1].axis('off')
 
-            axes[0, 1].imshow(recon, cmap='gray')
-            axes[0, 1].set_title('Reconstructed')
-            axes[0, 1].axis('off')
+            elif method == 'padim':
+                anomaly_maps = compute_anomaly_maps(model, images, device, method=method)
+                
+                # Convert to numpy with proper shape handling
+                original = images[0].cpu().squeeze().numpy()
+                anomaly_map = anomaly_maps[0].cpu().squeeze().numpy()
+                gt_mask = masks[0].squeeze()
+                label = labels[0]
 
-            axes[1, 0].imshow(anomaly_map, cmap='hot')
-            axes[1, 0].set_title('Anomaly Map (SSIM)')
-            axes[1, 0].axis('off')
+                # Ensure all arrays are 2D for visualization
+                if anomaly_map.ndim != 2:
+                    if anomaly_map.ndim == 0:
+                        anomaly_map = np.zeros((256, 256))
+                    elif anomaly_map.ndim == 1:
+                        anomaly_map = anomaly_map.reshape(256, 256)
+                    else:
+                        anomaly_map = anomaly_map.squeeze()
 
-            axes[1, 1].imshow(gt_mask, cmap='gray')
-            axes[1, 1].set_title(f'Ground Truth (Label: {label})')
-            axes[1, 1].axis('off')
+                if gt_mask.ndim != 2:
+                    if gt_mask.ndim == 0:
+                        gt_mask = np.zeros((256, 256))
+                    elif gt_mask.ndim == 1:
+                        gt_mask = gt_mask.reshape(256, 256)
+                    else:
+                        gt_mask = gt_mask.squeeze()
+
+                # Create visualization
+                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+                axes[0].imshow(original, cmap='gray')
+                axes[0].set_title('Original')
+                axes[0].axis('off')
+
+                axes[1].imshow(anomaly_map, cmap='hot')
+                axes[1].set_title('Anomaly Map (PaDiM)')
+                axes[1].axis('off')
+
+                axes[2].imshow(gt_mask, cmap='gray')
+                axes[2].set_title(f'Ground Truth (Label: {label})')
+                axes[2].axis('off')
 
             plt.tight_layout()
-            plt.savefig(samples_dir / f'sample_{i:03d}_label_{label}.png', dpi=150)
+            plt.savefig(samples_dir / f'{method}_sample_{i:03d}_label_{label}.png', dpi=150)
             plt.close()
 
+
 def main():
-    parser = argparse.ArgumentParser(description='Test SSIM Autoencoder for Anomaly Detection')
+    parser = argparse.ArgumentParser(description='Test SSIM Autoencoder or PaDiM for Anomaly Detection')
+    
+    # Model selection
+    parser.add_argument('--model', type=str, choices=['ssim', 'padim'], default='ssim',
+                        help='Model to test: ssim (autoencoder) or padim')
+    
+    # Data and model paths
     parser.add_argument('--data_root', type=str, required=True,
                         help='Root directory of transistor dataset')
     parser.add_argument('--model_path', type=str, required=True,
                         help='Path to trained model checkpoint')
     parser.add_argument('--save_dir', type=str, default='./test_results',
                         help='Directory to save test results')
+    
+    # Device and workers
     parser.add_argument('--device', type=str, default='auto',
                         help='Device to use (cuda/cpu/auto)')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -323,22 +376,41 @@ def main():
     print(f"Using device: {device}")
 
     # Create save directory
-    save_dir = Path(args.save_dir)
+    save_dir = Path(args.save_dir) / args.model
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load model
-    print(f"Loading model from {args.model_path}")
+    # Load model checkpoint
+    print(f"Loading {args.model.upper()} model from {args.model_path}")
     checkpoint = torch.load(args.model_path, map_location=device)
 
-    # Initialize model
-    if 'args' in checkpoint:
-        latent_dim = checkpoint['args'].latent_dim
-    else:
-        latent_dim = 128  # Default
+    if args.model == 'ssim':
+        # Initialize SSIM model
+        if 'args' in checkpoint:
+            latent_dim = checkpoint['args'].latent_dim
+        else:
+            latent_dim = 128  # Default
 
-    model = ConvolutionalAutoencoder(latent_dim=latent_dim).to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    print(f"Model loaded from epoch {checkpoint['epoch']} with loss {checkpoint['loss']:.6f}")
+        model = ConvolutionalAutoencoder(latent_dim=latent_dim).to(device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        if 'epoch' in checkpoint:
+            print(f"SSIM model loaded from epoch {checkpoint['epoch']} with loss {checkpoint['loss']:.6f}")
+        else:
+            print("SSIM model loaded successfully")
+
+    elif args.model == 'padim':
+        # Initialize PaDiM model
+        backbone = checkpoint.get('backbone', 'resnet18')
+        max_features = checkpoint.get('max_features', 100)
+        
+        model = PaDiM(
+            backbone=backbone,
+            layers=("layer1", "layer2", "layer3"),
+            max_features=max_features
+        ).to(device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        print(f"PaDiM model loaded with backbone: {backbone}, max_features: {max_features}")
 
     # Load test data
     print("Loading test dataset...")
@@ -352,22 +424,23 @@ def main():
     print(f"Test samples: {len(test_loader.dataset)}")
 
     # Evaluate model
-    results = evaluate_model(model, test_loader, device, save_dir)
+    results = evaluate_model(model, test_loader, device, save_dir, method=args.model)
 
     # Save results
     results_file = save_dir / 'evaluation_results.txt'
     with open(results_file, 'w') as f:
-        f.write("SSIM Autoencoder Evaluation Results\n")
+        f.write(f"{args.model.upper()} Evaluation Results\n")
         f.write("=" * 40 + "\n")
         for metric, value in results.items():
             f.write(f"{metric}: {value:.4f}\n")
 
-    print("\nEvaluation Results:")
+    print(f"\n{args.model.upper()} Evaluation Results:")
     print("=" * 40)
     for metric, value in results.items():
         print(f"{metric}: {value:.4f}")
 
     print(f"\nResults saved to: {save_dir}")
+
 
 if __name__ == "__main__":
     main()
