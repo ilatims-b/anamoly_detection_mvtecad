@@ -70,8 +70,8 @@ class PaDiM(nn.Module):
         self.register_buffer("sel_idx",
                              torch.tensor(sorted(random.sample(range(orig_dims),
                                                                min(max_features, orig_dims)))))
-        self.register_buffer("mean", torch.empty(0))        # will be filled in fit()
-        self.register_buffer("icov", torch.empty(0))        # inverse cov
+        self.register_buffer("mean", torch.empty(0))
+        self.register_buffer("icov", torch.empty(0))
 
     # -------------------------------------------------- #
     #   Training phase: compute μ and Σ⁻¹ per patch      #
@@ -133,7 +133,8 @@ class PaDiM(nn.Module):
     # -------------------------------------------------- #
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.mean.numel() == 0 or self.icov.numel() == 0:
+        if (not hasattr(self, 'mean') or not hasattr(self, 'icov') or
+            self.mean.numel() == 0 or self.icov.numel() == 0):
             raise RuntimeError("Model not fitted. Please call fit() first.")
             
         f = self.extractor(x)[:, self.sel_idx]             # [B,C,H,W]

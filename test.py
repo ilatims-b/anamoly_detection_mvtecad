@@ -380,9 +380,6 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # Load model checkpoint
-    print(f"Loading {args.model.upper()} model from {args.model_path}")
-    checkpoint = torch.load(args.model_path, map_location=device)
-
     if args.model == 'ssim':
         # Initialize SSIM model
         if 'args' in checkpoint:
@@ -399,18 +396,31 @@ def main():
             print("SSIM model loaded successfully")
 
     elif args.model == 'padim':
-        # Initialize PaDiM model
-        backbone = checkpoint.get('backbone', 'resnet18')
-        max_features = checkpoint.get('max_features', 100)
-        
+        print(f"Loading PADIM model from {args.model_path}")
+        checkpoint = torch.load(args.model_path, map_location=device)
         model = PaDiM(
-            backbone=backbone,
+            backbone=checkpoint.get('backbone', 'resnet18'),
             layers=("layer1", "layer2", "layer3"),
-            max_features=max_features
+            max_features=checkpoint.get('max_features', 100)
         ).to(device)
-        model.load_state_dict(checkpoint['model_state_dict'])
         
-        print(f"PaDiM model loaded with backbone: {backbone}, max_features: {max_features}")
+        # Manually load the state dict to handle buffer size mismatch
+        state_dict = checkpoint['model_state_dict']
+        mean_buffer = state_dict.pop('mean', None)
+        icov_buffer = state_dict.pop('icov', None)
+        
+        model.load_state_dict(state_dict, strict=False)
+        
+        if mean_buffer is not None:
+            model.mean = mean_buffer
+        if icov_buffer is not None:
+            model.icov = icov_buffer
+
+        print("After loading state dict:")
+        print("mean:", hasattr(model, 'mean'), model.mean.shape if hasattr(model, 'mean') else None)
+        print("icov:", hasattr(model, 'icov'), model.icov.shape if hasattr(model, 'icov') else None)
+        
+        print(f"PaDiM model loaded with backbone: {checkpoint.get('backbone', 'resnet18')}, max_features: {checkpoint.get('max_features', 100)}")
 
     # Load test data
     print("Loading test dataset...")
