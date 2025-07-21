@@ -1,5 +1,0 @@
-PADIM Evaluation Results
-========================================
-I-AUROC: 0.7879
-P-AUROC: 0.9275
-AUPRO: 0.5616
