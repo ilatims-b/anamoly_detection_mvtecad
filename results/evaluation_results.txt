@@ -1,5 +1,0 @@
-SSIM Autoencoder Evaluation Results
-========================================
-I-AUROC: 0.5000
-P-AUROC: 0.5000
-AUPRO: 0.1500
